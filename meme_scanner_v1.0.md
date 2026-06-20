@@ -1,7 +1,7 @@
 ---
 name: scan-live-v1
 description: >
-  扫链策略 Live Bot v1.0 — 独立 Python 自动交易机器人（非 MCP 版）。
+  扫链策略 Live Bot v1.0.1 — 独立 Python 自动交易机器人（非 MCP 版）。
   v1.0: 防 rug 强化（LP严格验证/Bundle/Age/冷却表）/
   动态卖点（TP2 45%/动态Trailing 8-20%）/ 新增动量死亡与量能枯竭检测。
   TraderSoul READ-ONLY 分析系统保留。
@@ -1937,7 +1937,7 @@ DASHBOARD_PORT = 3241
 
 PAGE_HTML = """<!DOCTYPE html>
 <html lang="zh"><head><meta charset="utf-8">
-<title>OXScan — Live Bot v1.0</title>
+<title>OXScan — Live Bot v1.0.1</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
@@ -2062,7 +2062,7 @@ body::after{content:'';position:fixed;inset:0;background:repeating-linear-gradie
   </div>
 </div>
 <div id="err-bar"></div>
-<div class="sidebar">OXScan v1.0 — <span>Soul READ-ONLY</span> | DynTrail | MomentumDead | VolExhaust | LP Strict</div>
+<div class="sidebar">OXScan v1.0.1 — <span>Soul READ-ONLY</span> | DynTrail | MomentumDead | VolExhaust | LP Strict</div>
 <script>
 var lastSeq=0,pnlHistory=[];
 function $(id){return document.getElementById(id)}
