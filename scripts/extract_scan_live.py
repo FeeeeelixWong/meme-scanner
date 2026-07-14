@@ -29,7 +29,7 @@ def main() -> None:
     parser.add_argument(
         "skill_file",
         nargs="?",
-        default="meme_scanner_v1.0.md",
+        default="meme_scanner.md",
         help="Path to the skill markdown file.",
     )
     parser.add_argument(
