@@ -1,13 +1,8 @@
 ---
-name: scan-live-v1
+name: meme-scanner
 description: >
-  扫链策略 Live Bot v1.0.4 — 独立 Python 自动交易机器人（非 MCP 版）。
-  v1.0: 防 rug 强化（LP严格验证/Bundle/Age/冷却表）/
-  动态卖点（TP2 45%/动态Trailing 8-20%）/ 新增动量死亡与量能枯竭检测。
-  v1.0.2: 低置信/年轻盘/重复信号只观察，实时卖压与短线砸盘硬拦截。
-  v1.0.3: 专业扫链看板，区分 WATCH / EXEC / RUG_RISK，强化空状态与数据密度。
-  v1.0.4: Signal Queue / Event Ledger 支持一键复制代币 CA。
-  TraderSoul READ-ONLY 分析系统保留。
+  Solana meme 代币信号扫描器，包含风险闸门、动态退出信号和本地观察看板。
+  默认观察模式；真实交易必须显式开启。TraderSoul 仅用于只读分析。
 
 version: 1.0.4
 validated: false
@@ -28,7 +23,7 @@ validation_results: >
 
 ---
 
-# 扫链策略 V1.0.4
+# Meme Scanner
 
 > ⚠️ 本 Skill 描述真实交易机器人。使用前确保已理解风险，建议先以极小仓位测试。
 

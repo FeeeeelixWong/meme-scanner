@@ -1,6 +1,8 @@
-# Meme Scanner v1.0.4
+# Meme Scanner
 
 > ⚠️ **风险声明**：本项目仅供学习研究，meme 币交易存在极高风险，可能损失全部本金。作者不承担任何财务损失责任。使用前请充分了解相关风险。
+
+Solana meme 代币信号扫描器，带风险闸门和仅监听本机的观察看板。默认只生成观察信号；真实交易必须显式开启。
 
 ---
 
@@ -110,17 +112,17 @@ $env:ENABLE_LIVE_TRADING="0"
 
 **方式一：克隆完整仓库（推荐）**
 ```bash
-git clone https://github.com/FeeeeelixWong/meme_scanner_v1.0
-cd meme_scanner_v1.0
+git clone https://github.com/FeeeeelixWong/meme-scanner.git
+cd meme-scanner
 ```
 
 **方式二：只下载 Skill 文件（轻量）**
 ```bash
 # curl
-curl -L -o meme_scanner_v1.0.md https://raw.githubusercontent.com/FeeeeelixWong/meme_scanner_v1.0/main/meme_scanner_v1.0.md
+curl -L -o meme_scanner.md https://raw.githubusercontent.com/FeeeeelixWong/meme-scanner/main/meme_scanner.md
 
 # 或 wget
-wget -O meme_scanner_v1.0.md https://raw.githubusercontent.com/FeeeeelixWong/meme_scanner_v1.0/main/meme_scanner_v1.0.md
+wget -O meme_scanner.md https://raw.githubusercontent.com/FeeeeelixWong/meme-scanner/main/meme_scanner.md
 ```
 
 ---
@@ -130,8 +132,9 @@ wget -O meme_scanner_v1.0.md https://raw.githubusercontent.com/FeeeeelixWong/mem
 可以让 Claude Code 按 Skill 自动部署，也可以先本地提取并做语法校验：
 
 ```bash
-python3 scripts/extract_scan_live.py meme_scanner_v1.0.md --output scan_live.py
+python3 scripts/extract_scan_live.py meme_scanner.md --output scan_live.py
 python3 -m py_compile scan_live.py
+python3 -m unittest discover -s tests -v
 ```
 
 ### 第六步：用 Claude Code 部署 Bot
@@ -141,7 +144,7 @@ python3 -m py_compile scan_live.py
 
 ```
 请按照 skill 文件里的 AUTO-DEPLOY COMMAND，
-部署并启动 scan_live.py，skill 文件路径是 ./meme_scanner_v1.0.md
+部署并启动 scan_live.py，skill 文件路径是 ./meme_scanner.md
 ```
 
 3. Claude Code 会自动执行 STEP 1-5，完成部署
@@ -263,7 +266,7 @@ rm -f scan_positions.json scan_trades.json trader_soul.json bot.log
 ## 文件说明
 
 ```
-meme_scanner_v1.0.md    ← Skill 文件（包含完整 Bot 代码）
+meme_scanner.md         ← Skill 文件（包含完整 Bot 代码）
 scan_live.py            ← 由 Skill 自动提取生成，无需手动维护
 bot.log                 ← 运行日志
 scan_positions.json     ← 持仓记录（自动生成）
