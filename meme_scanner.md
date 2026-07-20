@@ -4,7 +4,7 @@ description: >
   Solana meme 代币信号扫描器，包含风险闸门、动态退出信号和本地观察看板。
   默认观察模式；真实交易必须显式开启。TraderSoul 仅用于只读分析。
 
-version: 1.0.4
+version: 1.1.0
 validated: false
 validation_date: 2026-06-20
 validation_results: >
@@ -20,6 +20,8 @@ validation_results: >
   v1.0.3: professional dashboard redesign with KPI strip, signal queue,
   event ledger, position/trade rail, and explicit WATCH/EXEC/RUG labels.
   v1.0.4: token contract-address copy controls in Signal Queue and Event Ledger.
+  v1.1.0: credential-free replay mode with explainable risk decisions. Observation
+  mode no longer requires a wallet private key; live mode requires two explicit gates.
 
 ---
 
@@ -41,12 +43,14 @@ validation_results: >
 
 ---
 
-**STEP 1** — Kill any existing bot process and free port 3241:
+**STEP 1** — Check that the local dashboard port is available:
 
 ```bash
-pkill -f scan_live.py 2>/dev/null; sleep 1
-lsof -ti:3241 | xargs kill -9 2>/dev/null; sleep 1
-echo "✅ Port 3241 cleared"
+if lsof -nP -iTCP:3241 -sTCP:LISTEN >/dev/null; then
+  echo "❌ Port 3241 is already in use. Stop the expected local process or choose another port before starting."
+  exit 1
+fi
+echo "✅ Port 3241 is available"
 ```
 
 ---
@@ -133,7 +137,7 @@ scan_live.py（单文件独立 Bot）
 ## 第一部分：环境配置
 
 ```python
-import os, hmac, hashlib, base64, time, json, requests, threading, random
+import os, hmac, hashlib, base64, time, json, threading, random
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from collections import defaultdict
@@ -154,17 +158,28 @@ def env_flag(name: str, default: bool = False) -> bool:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
-# ── API ───────────────────────────────────────────────────────────────────────
-API_BASE   = "https://web3.okx.com"
-API_KEY    = require_env("OKX_API_KEY")
-SECRET_KEY = require_env("OKX_SECRET_KEY")
-PASSPHRASE = require_env("OKX_PASSPHRASE")
+# ── Runtime modes ─────────────────────────────────────────────────────────────
+# Replay is deliberately the zero-credential default. It uses built-in fixtures,
+# makes no network requests, and cannot sign or broadcast a transaction.
+RUN_MODE = os.environ.get("MEME_SCANNER_MODE", "replay").strip().lower() or "replay"
+if RUN_MODE not in {"replay", "observe", "live"}:
+    raise RuntimeError("MEME_SCANNER_MODE must be one of: replay, observe, live")
 
-# ── Runtime safety defaults ───────────────────────────────────────────────────
-# Default is observation mode. Set ENABLE_LIVE_TRADING=1 only after a wallet,
-# API permissions, and risk limits have been deliberately reviewed.
-ENABLE_LIVE_TRADING = env_flag("ENABLE_LIVE_TRADING", default=False)
-DASHBOARD_HOST      = os.environ.get("DASHBOARD_HOST", "127.0.0.1").strip() or "127.0.0.1"
+REPLAY_MODE = RUN_MODE == "replay"
+ENABLE_LIVE_TRADING = RUN_MODE == "live" and env_flag("ENABLE_LIVE_TRADING", default=False)
+if RUN_MODE == "live" and not ENABLE_LIVE_TRADING:
+    raise RuntimeError("Live mode requires ENABLE_LIVE_TRADING=1 as a second explicit gate")
+
+# ── API ───────────────────────────────────────────────────────────────────────
+API_BASE = "https://web3.okx.com"
+if REPLAY_MODE:
+    API_KEY = SECRET_KEY = PASSPHRASE = ""
+else:
+    API_KEY    = require_env("OKX_API_KEY")
+    SECRET_KEY = require_env("OKX_SECRET_KEY")
+    PASSPHRASE = require_env("OKX_PASSPHRASE")
+
+DASHBOARD_HOST = os.environ.get("DASHBOARD_HOST", "127.0.0.1").strip() or "127.0.0.1"
 
 # ── 仓位 ──────────────────────────────────────────────────────────────────────
 SOL_PER_TRADE = {"SCALP": 0.01, "MINIMUM": 0.01, "STRONG": 0.01}
@@ -307,6 +322,7 @@ def _sign(timestamp: str, method: str, path: str, body: str = "") -> dict:
     }
 
 def _get(path: str, params: dict | None = None) -> dict:
+    import requests
     params = params or {}
     ts  = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     qs  = ("?" + urlencode(params)) if params else ""
@@ -316,6 +332,7 @@ def _get(path: str, params: dict | None = None) -> dict:
     return r.json()
 
 def _post(path: str, payload: dict) -> dict:
+    import requests
     ts   = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     body = json.dumps(payload)
     hdrs = _sign(ts, "POST", path, body)
@@ -375,6 +392,7 @@ def fetch_token_logo(addr: str) -> str:
     if addr in _logo_cache:
         return _logo_cache[addr] or ""
     try:
+        import requests
         r = requests.get(
             f"https://api.dexscreener.com/latest/dex/tokens/{addr}",
             timeout=5, headers={"User-Agent": "Mozilla/5.0"}
@@ -485,13 +503,15 @@ def portfolio_token_pnl(token_address: str) -> dict:
 ## 第三部分：Solana 签名
 
 ```python
-import base58
-from solders.keypair import Keypair
-from solders.transaction import VersionedTransaction
+WALLET_PRIVATE_KEY = os.environ.get("WALLET_PRIVATE_KEY", "").strip()
 
-WALLET_PRIVATE_KEY = require_env("WALLET_PRIVATE_KEY")
-
-def get_keypair() -> Keypair:
+def get_keypair():
+    if not ENABLE_LIVE_TRADING:
+        raise RuntimeError("Transaction signing is available only in MEME_SCANNER_MODE=live")
+    if not WALLET_PRIVATE_KEY:
+        raise RuntimeError("Live mode requires WALLET_PRIVATE_KEY")
+    import base58
+    from solders.keypair import Keypair
     try:
         raw = base58.b58decode(WALLET_PRIVATE_KEY)
     except Exception as e:
@@ -501,13 +521,14 @@ def get_keypair() -> Keypair:
     return Keypair.from_bytes(raw)
 
 def sign_transaction(tx_data: str) -> str:
+    from solders.transaction import VersionedTransaction
     kp  = get_keypair()
     raw = base64.b64decode(tx_data)
     tx  = VersionedTransaction.from_bytes(raw)
     tx.sign([kp])
     return base64.b64encode(bytes(tx)).decode()
 
-WALLET_ADDRESS = str(get_keypair().pubkey())
+WALLET_ADDRESS = str(get_keypair().pubkey()) if ENABLE_LIVE_TRADING else ""
 ```
 
 ---
@@ -520,7 +541,7 @@ pos_lock   = threading.Lock()
 
 positions = {}
 state = {
-    "cycle": 0, "hot": False, "status": "启动中…",
+    "cycle": 0, "hot": False, "status": "启动中…", "mode": RUN_MODE,
     "feed": [], "feed_seq": 0,
     "signals": [],
     "positions": {},
@@ -582,6 +603,63 @@ def load_on_startup():
         with open(TRADES_FILE) as f:
             with state_lock:
                 state["trades"] = json.load(f)
+
+
+def load_replay_state():
+    """Load deterministic demo fixtures without contacting an API or a wallet."""
+    now = time.strftime("%H:%M:%S")
+    feed = [
+        {
+            "symbol": "RUGDROP", "addr": "RugDropReplay111111111111111111111111111111",
+            "tier": "RUG_RISK", "decision": "BLOCK",
+            "reject_reason": "LP_UNVERIFIABLE (strict mode)",
+            "reason_codes": ["LP lock could not be verified", "Strict LP policy fails closed"],
+            "reason_summary": "Blocked before any quote or signing attempt.",
+            "mc": 42000, "age_m": 14.0, "confidence": 0, "t": now,
+        },
+        {
+            "symbol": "CASCADE", "addr": "CascadeReplay111111111111111111111111111111",
+            "tier": "REJECTED", "decision": "BLOCK",
+            "reject_reason": "SELL_STREAK 8",
+            "reason_codes": ["Eight consecutive sells", "Recent sell pressure exceeds policy"],
+            "reason_summary": "Rejected as a sell cascade, even though discovery filters passed.",
+            "mc": 67000, "age_m": 26.0, "confidence": 0, "t": now,
+        },
+        {
+            "symbol": "EARLYBIRD", "addr": "EarlyBirdReplay11111111111111111111111111111",
+            "tier": "STRONG", "decision": "WATCH", "executable": False,
+            "execution_blocked": "young 9.0m<15m needs 70+ confidence",
+            "reason_codes": ["LP and bundle checks passed", "Age gate holds the candidate for observation"],
+            "reason_summary": "Visible to the operator, but not eligible for an execution path.",
+            "mc": 85000, "age_m": 9.0, "confidence": 66, "sig_a_ratio": 2.6,
+            "ratio_c": 2.1, "t": now,
+        },
+        {
+            "symbol": "CLEARPATH", "addr": "ClearPathReplay11111111111111111111111111111",
+            "tier": "MINIMUM", "decision": "PASS", "executable": True,
+            "reason_codes": ["LP lock verified", "Bundle and developer concentration are within limits", "No sell cascade or recent crash detected"],
+            "reason_summary": "Passed the configured gates. Replay mode still cannot quote, sign, or trade.",
+            "mc": 138000, "age_m": 32.0, "confidence": 74, "sig_a_ratio": 2.3,
+            "ratio_c": 1.9, "t": now,
+        },
+    ]
+    for index, row in enumerate(feed, start=1):
+        row["seq"] = len(feed) - index + 1
+    signals = [row for row in feed if row["tier"] in ("SCALP", "MINIMUM", "STRONG")]
+    with state_lock:
+        state["mode"] = "replay"
+        state["cycle"] = 1
+        state["hot"] = False
+        state["status"] = "Replay fixtures loaded — no network or wallet access"
+        state["feed"] = list(feed)
+        state["feed_seq"] = len(feed)
+        state["signals"] = signals
+        state["positions"] = {}
+        state["trades"] = []
+        state["stats"] = {
+            "cycles": 1, "buys": 0, "sells": 0, "wins": 0, "losses": 0,
+            "net_sol": 0.0, "session_start": now,
+        }
 ```
 
 ---
@@ -938,6 +1016,20 @@ def soul_summary() -> dict:
         "wins":            soul.get("wins", 0),
         "losses":          soul.get("losses", 0),
     }
+
+
+def load_replay_soul():
+    """Keep demo state in memory so replay never creates a local trading history."""
+    soul.clear()
+    soul.update(_default_soul())
+    soul.update({
+        "name": "Replay Analyst",
+        "stage": "Demo",
+        "reflections": [
+            {"t": time.strftime("%H:%M:%S"), "msg": "Replay mode: fixtures show why a token is blocked, watched, or passed."},
+            {"t": time.strftime("%H:%M:%S"), "msg": "No API request, private key read, quote, signature, or broadcast is possible here."},
+        ],
+    })
 ```
 
 ---
@@ -2133,7 +2225,7 @@ DASHBOARD_PORT = 3241
 PAGE_HTML = """<!DOCTYPE html>
 <html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OXScan Command — v1.0.4</title>
+<title>OXScan Command — v1.1.0</title>
 <style>
 :root{
   color-scheme:dark;
@@ -2174,6 +2266,7 @@ body{background:var(--bg);color:var(--text);font:12px/1.45 var(--sans)}
 .scroll::-webkit-scrollbar{width:8px;height:8px}.scroll::-webkit-scrollbar-thumb{background:#2a3745;border-radius:999px;border:2px solid var(--panel)}
 .feed-row{display:grid;grid-template-columns:52px 94px minmax(0,1fr);align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid rgba(35,48,61,.72)}
 .feed-row.has-copy{grid-template-columns:52px 94px minmax(0,1fr) 52px}
+.decision-row{cursor:pointer}.decision-row:focus{outline:2px solid var(--accent-2);outline-offset:-2px;background:#151f2a}
 .feed-row:hover,.signal-row:hover,.pos-row:hover,.trade-row:hover{background:#151f2a}
 .time{font:11px var(--mono);color:var(--muted)}
 .badge{display:inline-flex;align-items:center;justify-content:center;min-width:72px;height:23px;padding:0 8px;border-radius:5px;font:800 10px var(--mono);letter-spacing:.05em;text-transform:uppercase;border:1px solid var(--line);background:#0b1117;color:var(--soft)}
@@ -2182,6 +2275,11 @@ body{background:var(--bg);color:var(--text);font:12px/1.45 var(--sans)}
 .badge.exec{color:var(--accent);border-color:#276857;background:#0d1e1a}
 .badge.risk,.badge.reject{color:var(--danger);border-color:#5f2d31;background:#201114}
 .feed-msg{min-width:0;color:#c9d2da;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.decision-detail{border-bottom:1px solid var(--line);padding:12px 14px;background:#0e151d}
+.decision-kicker{color:var(--muted);font:10px var(--mono);letter-spacing:.09em;text-transform:uppercase}
+.decision-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:5px;font:750 14px var(--sans)}
+.decision-summary{margin:7px 0 0;color:#c9d2da;font-size:12px;line-height:1.5}
+.reason-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.reason-chip{border:1px solid #314252;background:#111c27;color:#b7c5d1;border-radius:5px;padding:4px 6px;font:10px var(--mono)}
 .muted{color:var(--muted)}.mono{font-family:var(--mono)}
 .signal-row{padding:13px 14px;border-bottom:1px solid rgba(35,48,61,.72)}
 .sig-top{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:start}
@@ -2214,9 +2312,11 @@ body{background:var(--bg);color:var(--text);font:12px/1.45 var(--sans)}
 .footer{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--muted);font:11px var(--mono);padding:0 2px}
 #err-bar{display:none;border:1px solid #6a2c32;background:#211114;color:#f0a0a0;border-radius:8px;padding:9px 12px;font:12px var(--mono)}
 @media (max-width:1100px){
-  html,body{overflow:auto}.app-shell{min-height:100dvh;height:auto}
-  .topbar,.kpi-grid,.workspace{grid-template-columns:1fr}.workspace,.rail{min-height:640px}
-  .kpi-grid{grid-template-columns:repeat(2,1fr)}.rail{grid-template-rows:minmax(220px,1fr) minmax(220px,1fr) 190px}
+  html,body{height:auto;min-height:100%;overflow:auto}.app-shell{min-height:100dvh;height:auto}
+  .topbar,.kpi-grid{grid-template-columns:1fr}.kpi-grid{grid-template-columns:repeat(2,1fr)}
+  .workspace{display:block;flex:0;min-height:0}.workspace>.panel{margin-bottom:12px}
+  .rail{display:block;min-height:0}.rail .panel{min-height:0;margin-bottom:12px}
+  .scroll{flex:0 0 auto;max-height:none;overflow:visible}
 }
 </style>
 </head><body>
@@ -2250,7 +2350,8 @@ body{background:var(--bg);color:var(--text);font:12px/1.45 var(--sans)}
       <div class="scroll" id="feed-list"></div>
     </section>
     <section class="panel">
-      <div class="panel-head"><div class="panel-title"><strong>Signal Queue</strong><span>watch versus executable</span></div><span class="count" id="sig-cnt">0</span></div>
+      <div class="panel-head"><div class="panel-title"><strong>Signal Queue</strong><span>watch versus policy eligibility</span></div><span class="count" id="sig-cnt">0</span></div>
+      <div class="decision-detail" id="decision-detail"></div>
       <div class="scroll" id="sig-list"></div>
     </section>
     <aside class="rail">
@@ -2271,12 +2372,12 @@ body{background:var(--bg);color:var(--text);font:12px/1.45 var(--sans)}
 
   <div id="err-bar"></div>
   <footer class="footer">
-    <span>OXScan v1.0.4 | RugGate | LP Strict | MomentumDead | VolExhaust</span>
+    <span>OXScan v1.1.0 | Replay Safe | RugGate | LP Strict | MomentumDead | VolExhaust</span>
     <span id="session-stats"></span>
   </footer>
 </div>
 <script>
-var lastSeq=0,pnlHistory=[],copiedCA='',copiedUntil=0;
+var lastSeq=0,pnlHistory=[],copiedCA='',copiedUntil=0,latestFeed=[],selectedDecisionSeq=0,currentMode='replay';
 function $(id){return document.getElementById(id)}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function clean(v){return esc(v).replace(/[\\u2600-\\u27BF]|[\\uD83C-\\uDBFF][\\uDC00-\\uDFFF]/g,'').replace(/\\s+/g,' ').trim()}
@@ -2301,6 +2402,40 @@ function wireCopyButtons(){
     var btn=e.target.closest&&e.target.closest('[data-copy-ca]');if(!btn)return;
     var addr=btn.getAttribute('data-copy-ca')||'';if(!addr)return;
     copyText(addr).then(function(){copiedCA=addr;copiedUntil=Date.now()+1400;btn.classList.remove('copy-failed');btn.classList.add('copied');btn.textContent='COPIED'}).catch(function(){btn.classList.add('copy-failed');btn.textContent='FAIL'});
+  });
+}
+function decisionLabel(r){
+  if(r.decision)return r.decision;
+  if(r.tier==='RUG_RISK'||r.tier==='DEV_SELL'||r.tier==='WASH_SUSPECT'||r.tier==='REJECTED')return 'BLOCK';
+  return r.executable?'PASS':'WATCH';
+}
+function decisionReasons(r){
+  if(Array.isArray(r.reason_codes)&&r.reason_codes.length)return r.reason_codes;
+  if(r.reject_reason)return [r.reject_reason];
+  if(r.execution_blocked)return [r.execution_blocked];
+  if(r.executable)return ['Configured entry-quality and risk gates passed'];
+  return ['No decision reason was recorded for this event'];
+}
+function renderDecisionDetail(items){
+  var candidates=(items||[]).filter(function(r){return !r.sep&&!r.sym_note&&r.symbol});
+  var selected=candidates.filter(function(r){return Number(r.seq)===Number(selectedDecisionSeq)})[0]||candidates[0];
+  if(!selected){$('decision-detail').innerHTML='<div class="decision-kicker">Decision detail</div><div class="decision-summary">Select a scanner decision to inspect its policy evidence.</div>';return}
+  selectedDecisionSeq=selected.seq;
+  var label=decisionLabel(selected),cls=label==='BLOCK'?'risk':label==='PASS'?'exec':'watch';
+  var reasons=decisionReasons(selected).map(function(reason){return '<span class="reason-chip">'+clean(reason)+'</span>'}).join('');
+  $('decision-detail').innerHTML='<div class="decision-kicker">Decision detail</div><div class="decision-title"><span>'+clean(selected.symbol)+'</span>'+badge(label,cls)+'</div><div class="decision-summary">'+clean(selected.reason_summary||'This result is derived from the visible decision evidence below.')+'</div><div class="reason-list">'+reasons+'</div>';
+}
+function wireDecisionRows(){
+  function select(row){
+    selectedDecisionSeq=Number(row.getAttribute('data-select-decision')||0);renderDecisionDetail(latestFeed);
+  }
+  document.addEventListener('click',function(e){
+    if(e.target.closest&&e.target.closest('[data-copy-ca]'))return;
+    var row=e.target.closest&&e.target.closest('[data-select-decision]');if(row)select(row);
+  });
+  document.addEventListener('keydown',function(e){
+    var row=e.target.closest&&e.target.closest('[data-select-decision]');
+    if(row&&(e.key==='Enter'||e.key===' ')){e.preventDefault();select(row)}
   });
 }
 function empty(title, body){return '<div class="empty"><div><b>'+esc(title)+'</b><span>'+esc(body)+'</span></div></div>'}
@@ -2329,13 +2464,13 @@ function renderFeed(items){
   $('feed-list').innerHTML=items.map(function(r){
     if(r.sep){return '<div class="feed-row"><div class="time">'+esc(r.t||'')+'</div>'+badge('CYCLE','info')+'<div class="feed-msg">Cycle '+esc(r.cycle)+' | '+(r.hot?'HOT':'NORMAL')+'</div></div>'}
     if(r.sym_note){return '<div class="feed-row"><div class="time">'+esc(r.t||'')+'</div>'+badge('SYSTEM','info')+'<div class="feed-msg">'+clean(r.msg||'')+'</div></div>'}
-    var cls=badgeClass(r.tier,r.executable),msg=clean(r.symbol||'');
+    var cls=badgeClass(r.tier,r.executable),msg=clean(r.symbol||''),decision=decisionLabel(r);
     if(r.reject_reason)msg+=' | '+clean(r.reject_reason);
     else if(r.execution_blocked)msg+=' | WATCH '+clean(r.execution_blocked);
     else if(r.sig_a_ratio)msg+=' | A '+num(r.sig_a_ratio,2)+'x / C '+num(r.ratio_c,2)+'x';
     if(r.mc)msg+=' | MC '+money(r.mc);
     if(r.confidence)msg+=' | Cnf '+num(r.confidence,0);
-    return '<div class="feed-row '+(r.addr?'has-copy':'')+'"><div class="time">'+esc(r.t||'')+'</div>'+badge(r.tier||'INFO',cls)+'<div class="feed-msg">'+msg+'</div>'+caCopyButton(r.addr)+'</div>';
+    return '<div class="feed-row decision-row '+(r.addr?'has-copy':'')+'" role="button" tabindex="0" data-select-decision="'+esc(r.seq||'')+'" aria-label="Inspect '+esc(r.symbol||'scanner')+' decision"><div class="time">'+esc(r.t||'')+'</div>'+badge(decision,cls)+'<div class="feed-msg">'+msg+'</div>'+caCopyButton(r.addr)+'</div>';
   }).join('');
 }
 function renderSignals(sigs){
@@ -2345,8 +2480,10 @@ function renderSignals(sigs){
   $('sig-list').innerHTML=sigs.map(function(s){
     var exec=!!s.executable,cls=badgeClass(s.tier,exec),logo=s.logo?'<img src="'+esc(s.logo)+'" alt="">':esc((s.symbol||'?').slice(0,2).toUpperCase());
     var blocker=s.execution_blocked?'<div class="blocker">'+clean(s.execution_blocked)+'</div>':'';
-    return '<div class="signal-row"><div class="sig-top"><div class="sig-name"><div class="avatar">'+logo+'</div><div><div class="sig-symbol">'+clean(s.symbol||'?')+'</div><div class="sig-id"><div class="sig-addr">'+esc(shortAddr(s.addr))+'</div>'+caCopyButton(s.addr)+'</div></div></div><div class="sig-tags">'+badge(s.tier,cls)+badge(exec?'EXEC':'WATCH',exec?'exec':'watch')+'</div></div>'
-      +'<div class="metric-line"><div class="mini"><span>Market Cap</span><b>'+money(s.mc)+'</b></div><div class="mini"><span>Age</span><b>'+num(s.age_m,1)+'m</b></div><div class="mini"><span>Confidence</span><b>'+num(s.confidence,0)+'</b></div><div class="mini"><span>Flow</span><b>A '+num(s.sig_a_ratio,2)+'x</b></div></div>'+blocker+'</div>';
+    var summary=s.reason_summary?'<div class="blocker">'+clean(s.reason_summary)+'</div>':'';
+    var actionLabel=exec?(currentMode==='replay'?'PASS':'EXEC'):'WATCH';
+    return '<div class="signal-row"><div class="sig-top"><div class="sig-name"><div class="avatar">'+logo+'</div><div><div class="sig-symbol">'+clean(s.symbol||'?')+'</div><div class="sig-id"><div class="sig-addr">'+esc(shortAddr(s.addr))+'</div>'+caCopyButton(s.addr)+'</div></div></div><div class="sig-tags">'+badge(s.tier,cls)+badge(actionLabel,exec?'exec':'watch')+'</div></div>'
+      +'<div class="metric-line"><div class="mini"><span>Market Cap</span><b>'+money(s.mc)+'</b></div><div class="mini"><span>Age</span><b>'+num(s.age_m,1)+'m</b></div><div class="mini"><span>Confidence</span><b>'+num(s.confidence,0)+'</b></div><div class="mini"><span>Flow</span><b>A '+num(s.sig_a_ratio,2)+'x</b></div></div>'+blocker+summary+'</div>';
   }).join('');
 }
 function renderPositions(pos){
@@ -2378,25 +2515,26 @@ function drawPnl(){
 async function poll(){
   try{
     var r=await fetch('/api/state'),d=await r.json(),stats=d.stats||{},feed=d.feed||[],signals=d.signals||[],positions=d.positions||{},trades=d.trades||[];
+    latestFeed=feed;currentMode=d.mode||'observe';
     var exec=signals.filter(function(s){return s.executable}).length,watch=signals.length-exec;
     var risk=feed.filter(function(x){return x.tier==='RUG_RISK'||x.tier==='DEV_SELL'||x.tier==='WASH_SUSPECT'}).length;
     var rejects=feed.filter(function(x){return x.tier==='REJECTED'}).length;
     $('st-cyc').textContent=d.cycle||0;$('st-status').textContent=clean(d.status||'Running');$('engine-status').textContent=clean(d.status||'Running');
-    $('st-sig').textContent=signals.length;$('st-sig-sub').textContent=exec+' exec / '+watch+' watch';
+    $('st-sig').textContent=signals.length;$('st-sig-sub').textContent=exec+(d.mode==='replay'?' pass / ':' exec / ')+watch+' watch';
     $('st-risk').textContent=risk;$('st-risk-sub').textContent=rejects+' rejects in ledger';
-    $('st-pos').textContent=Object.keys(positions).length;$('st-pos-sub').textContent='Max positions governed';
+    $('st-pos').textContent=Object.keys(positions).length;$('st-pos-sub').textContent=d.mode==='replay'?'No wallet connected':'Max positions governed';
     var pnl=Number(stats.net_sol||0);$('st-pnl').textContent=(pnl>=0?'+':'')+num(pnl,4);$('pnl-card').className='kpi '+(pnl>=0?'good':'danger');
     var wins=stats.wins||0,losses=stats.losses||0,total=wins+losses;$('st-wr').textContent=total?'WR '+num(wins/total*100,0)+'%':'no closed trades';
-    $('feed-cnt').textContent=feed.length;renderFeed(feed.slice(0,120));renderSignals(signals.slice(0,60));renderPositions(positions);renderTrades(trades.slice(0,60));
+    $('feed-cnt').textContent=feed.length;renderFeed(feed.slice(0,120));renderDecisionDetail(feed);renderSignals(signals.slice(0,60));renderPositions(positions);renderTrades(trades.slice(0,60));
     if(d.soul){updateSoul(d.soul);updateSoulThoughts(d.soul.reflections);updateSessionStats(d.soul)}
     pnlHistory.push(pnl);if(pnlHistory.length>180)pnlHistory.shift();drawPnl();
-    $('mode-label').textContent='DRY RUN';$('status-dot').className='dot';$('clock').textContent=new Date().toLocaleTimeString();
+    $('mode-label').textContent=d.mode==='replay'?'REPLAY SAFE':d.mode==='live'?'LIVE':'OBSERVE';$('status-dot').className='dot';$('clock').textContent=new Date().toLocaleTimeString();
     var eb=$('err-bar');eb.style.display='none';
   }catch(e){
     var eb=$('err-bar');eb.textContent='poll error: '+(e&&e.message?e.message:e);eb.style.display='block';$('status-dot').className='dot warn';
   }
 }
-wireCopyButtons();setInterval(poll,2000);poll();
+wireCopyButtons();wireDecisionRows();setInterval(poll,2000);poll();
 </script></body></html>"""
 
 class DashHandler(BaseHTTPRequestHandler):
@@ -2417,6 +2555,9 @@ class DashHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(html)
+        elif self.path == "/favicon.ico":
+            self.send_response(204)
+            self.end_headers()
         elif self.path == "/api/state":
             with state_lock: snap = json.loads(json.dumps(state, ensure_ascii=False))
             snap["soul"] = soul_summary()
@@ -2426,15 +2567,16 @@ class DashHandler(BaseHTTPRequestHandler):
 
 
 def run_dashboard():
-    import socket, subprocess
+    import socket
     try:
         probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         probe.bind((DASHBOARD_HOST, DASHBOARD_PORT))
         probe.close()
     except OSError:
-        print(f"  ⚠️  {DASHBOARD_HOST}:{DASHBOARD_PORT} busy — killing...")
-        subprocess.run(f"lsof -ti:{DASHBOARD_PORT} | xargs kill -9", shell=True, capture_output=True)
-        time.sleep(1.5)
+        raise RuntimeError(
+            f"Dashboard port {DASHBOARD_HOST}:{DASHBOARD_PORT} is already in use. "
+            "Stop the expected local process before starting Meme Scanner."
+        )
 
     HTTPServer.allow_reuse_address = True
     try:
@@ -2454,31 +2596,35 @@ if __name__ == "__main__":
     dashboard_host = "localhost" if DASHBOARD_HOST == "127.0.0.1" else DASHBOARD_HOST
     dashboard_url = f"http://{dashboard_host}:{DASHBOARD_PORT}"
     print("=" * 60)
-    print("  扫链策略 Live Bot v1.0.4")
+    print("  Meme Scanner v1.1.0")
     print("  Anti-rug: LP Strict | Bundle 22% | Age 6min | Cooldown 10min")
-    print("  Exit: DynTrail 8-20% | MomentumDead | VolExhaust | TP2 45%")
-    print(f"  Wallet: {WALLET_ADDRESS[:8]}...{WALLET_ADDRESS[-4:]}")
     print(f"  Dashboard: {dashboard_url}")
-    print(f"  Live trading: {'ENABLED' if ENABLE_LIVE_TRADING else 'DRY RUN / observation mode'}")
-    print(f"  Max exposure: {MAX_SOL} SOL | Max positions: {MAX_POSITIONS}")
+    print(f"  Mode: {RUN_MODE.upper()}")
+    if ENABLE_LIVE_TRADING:
+        print(f"  Wallet: {WALLET_ADDRESS[:8]}...{WALLET_ADDRESS[-4:]}")
+        print(f"  Max exposure: {MAX_SOL} SOL | Max positions: {MAX_POSITIONS}")
+    elif REPLAY_MODE:
+        print("  Replay uses built-in fixtures only: no API request, wallet, signing, or broadcast.")
+    else:
+        print("  Observation mode uses market data only: signing and broadcasts stay disabled.")
     print("=" * 60)
 
-    load_on_startup()
-    load_soul()
-
-    threading.Thread(target=scanner_loop, daemon=True).start()
-    threading.Thread(target=monitor_loop, daemon=True).start()
-
-    print(f"  scanner_loop started (every {LOOP_SEC}s)")
-    print(f"  monitor_loop started (every {MONITOR_SEC}s)")
-
-    push_feed({"sym_note": True,
-               "msg": (f"🟢 Bot v1.0.4 started — Soul: {soul.get('name','...')} [{soul.get('stage','Novice')}]  "
-                       f"SigA:{SIG_A_THRESHOLD}  BS:{BS_MIN}  MC>${MC_MIN/1000:.0f}K-${MC_CAP/1000:.0f}K  "
-                       f"Age≥{AGE_HARD_MIN}s  Bundle≤{BUNDLE_ATH_PCT_MAX}%  LP Strict:{LP_LOCK_STRICT}  "
-                       f"Monitor:{MONITOR_SEC}s  TP2:{TP2_PCT*100:.0f}%  "
-                       f"LiveTrading:{ENABLE_LIVE_TRADING}"),
-               "t": time.strftime("%H:%M:%S")})
+    if REPLAY_MODE:
+        load_replay_state()
+        load_replay_soul()
+    else:
+        load_on_startup()
+        load_soul()
+        threading.Thread(target=scanner_loop, daemon=True).start()
+        threading.Thread(target=monitor_loop, daemon=True).start()
+        print(f"  scanner_loop started (every {LOOP_SEC}s)")
+        print(f"  monitor_loop started (every {MONITOR_SEC}s)")
+        push_feed({"sym_note": True,
+                   "msg": (f"Scanner started — Soul: {soul.get('name','...')} [{soul.get('stage','Novice')}]  "
+                           f"SigA:{SIG_A_THRESHOLD}  BS:{BS_MIN}  MC>${MC_MIN/1000:.0f}K-${MC_CAP/1000:.0f}K  "
+                           f"Age>={AGE_HARD_MIN}s  Bundle<={BUNDLE_ATH_PCT_MAX}%  LP Strict:{LP_LOCK_STRICT}  "
+                           f"Monitor:{MONITOR_SEC}s  LiveTrading:{ENABLE_LIVE_TRADING}"),
+                   "t": time.strftime("%H:%M:%S")})
 
     print(f"  Dashboard → {dashboard_url}")
     try:
@@ -2492,31 +2638,14 @@ if __name__ == "__main__":
 ## 第十六部分：部署检查清单
 
 ```bash
-# 1. 安装依赖
-pip install requests solders base58
+# 1. Safe demo: no dependencies, API keys, wallet, signing, or network requests.
+MEME_SCANNER_MODE=replay python3 scan_live.py
 
-# 2. 设置环境变量
-export OKX_API_KEY="..."
-export OKX_SECRET_KEY="..."
-export OKX_PASSPHRASE="..."
-export WALLET_PRIVATE_KEY="..."
+# 2. Optional observation mode: configure only market-data credentials in .env.
+set -a && source .env && set +a
+MEME_SCANNER_MODE=observe python3 scan_live.py
 
-# 3. 测试 API 连接
-python3 -c "from scan_live import token_ranking; print(token_ranking(5)[:1])"
-
-# 4. 小仓位测试（强烈建议先用）
-# SOL_PER_TRADE = {"SCALP": 0.001, "MINIMUM": 0.001, "STRONG": 0.001}
-
-# 5. 后台运行
-[ -f ~/.dacs_env_profile ] && source ~/.dacs_env_profile
-nohup python3 scan_live.py > bot.log 2>&1 &
-
-# 6. 查看日志
-tail -f bot.log
-
-# 7. 访问 Dashboard
-open http://localhost:3241
-
-# 8. 停止
-pkill -f scan_live.py
+# 3. Validate the generated implementation.
+python3 -m py_compile scan_live.py
+python3 -m unittest discover -s tests -v
 ```
