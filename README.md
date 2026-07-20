@@ -1,291 +1,83 @@
 # Meme Scanner
 
-> ⚠️ **风险声明**：本项目仅供学习研究，meme 币交易存在极高风险，可能损失全部本金。作者不承担任何财务损失责任。使用前请充分了解相关风险。
+> A local Solana meme-token risk scanner that explains why a candidate is **blocked**, **watched**, or **passes** configured gates. It is an experimental research tool, not financial advice or a profit system.
 
-Solana meme 代币信号扫描器，带风险闸门和仅监听本机的观察看板。默认只生成观察信号；真实交易必须显式开启。
+Meme Scanner is built for one question: before an operator considers a volatile token, can the system show its safety evidence and stop clearly risky candidates early? The dashboard is local by default and the first-run experience uses deterministic replay data, not a wallet or external API.
 
----
+## Start safely: Replay Mode
 
-## 功能特性
+Replay Mode is the default. It has no network requests, no API keys, no wallet access, no transaction signing, and no broadcast capability.
 
-- 🔍 基于 OKX Web3 API 实时扫描 Solana meme 代币
-- 🛡️ 防 rug 检测（LP 严格锁定验证 / Bundle ≤22% / Dev Hold ≤10% / Age ≥6min）
-- 📉 动态 Trailing Stop（8-20%，随盈利自动调整）
-- 💀 动量死亡 + 量能枯竭检测，智能提前锁利
-- 🧯 Rug 风险闸门：低置信/年轻盘/重复信号只观察，不进入开仓流程
-- 📉 实时卖压和短线砸盘拦截，防止追进 sell cascade
-- ❌ 被拒代币 10 分钟冷却缓存，避免重复检测
-- 🧠 TraderSoul 进化型交易人格系统（只读分析，不干预交易）
-- 🧪 默认观察模式：必须显式 `ENABLE_LIVE_TRADING=1` 才会广播真实交易
-- 🖥️ 专业扫链看板（Signal Queue / Event Ledger 支持 CA 一键复制，默认仅监听本机 `127.0.0.1:3241`）
-- 📦 单 `.md` Skill 文件，Claude Code 一键部署
-
----
-
-## 环境要求
-
-| 必需项 | 说明 | 获取方式 |
-|---|---|---|
-| **OKX Web3 API Key** | 用于调用链上数据和执行交易 | [OKX 开发者平台](https://www.okx.com/web3/build/docs) |
-| **Solana 钱包私钥** | Bot 用于签名和发送交易 | Phantom / Solflare 导出 |
-| **Python 3.10+** | 运行环境 | [python.org](https://python.org) |
-| **Claude Code** | 用于部署和运行 Skill | [claude.ai/code](https://claude.ai/code) |
-
-> ⚠️ **强烈建议**：新建一个专用钱包用于 Bot，不要使用存有大量资产的主钱包。初始充值 0.1-0.5 SOL 用于测试即可。
-
----
-
-## 🚀 快速开始
-
-### 第一步：申请 OKX API Key
-
-1. 登录 [OKX 开发者平台](https://www.okx.com/web3/build/docs)
-2. 创建新的 API Key，权限勾选：
-   - ✅ Read
-   - ✅ Trade
-3. 记录下三个值：
-   - `API Key`
-   - `Secret Key`
-   - `Passphrase`
-
----
-
-### 第二步：安装依赖
-
-```bash
-python3 -m pip install -r requirements.txt
-```
-
----
-
-### 第三步：配置环境变量
-
-推荐从模板复制：
-
-```bash
-cp .env.example .env
-$EDITOR .env
-set -a
-source .env
-set +a
-```
-
-默认 `.env.example` 里 `ENABLE_LIVE_TRADING=0`，Bot 只做观察和信号验证，不会签名或广播 swap。确认钱包、API 权限、仓位和风控后，才把它改成：
-
-```bash
-export ENABLE_LIVE_TRADING=1
-```
-
-**Linux / macOS（临时，当前终端有效）：**
-```bash
-export OKX_API_KEY="你的API Key"
-export OKX_SECRET_KEY="你的Secret Key"
-export OKX_PASSPHRASE="你的Passphrase"
-export WALLET_PRIVATE_KEY="你的Solana钱包私钥(Base58格式)"
-export ENABLE_LIVE_TRADING=0
-```
-
-**Linux / macOS（永久，重启后依然有效）：**
-```bash
-cat >> ~/.bashrc << 'EOF'
-export OKX_API_KEY="你的API Key"
-export OKX_SECRET_KEY="你的Secret Key"
-export OKX_PASSPHRASE="你的Passphrase"
-export WALLET_PRIVATE_KEY="你的Solana钱包私钥"
-export ENABLE_LIVE_TRADING=0
-EOF
-source ~/.bashrc
-```
-
-**Windows（PowerShell）：**
-```powershell
-$env:OKX_API_KEY="你的API Key"
-$env:OKX_SECRET_KEY="你的Secret Key"
-$env:OKX_PASSPHRASE="你的Passphrase"
-$env:WALLET_PRIVATE_KEY="你的Solana钱包私钥"
-$env:ENABLE_LIVE_TRADING="0"
-```
-
----
-
-### 第四步：获取 Skill 文件
-
-**方式一：克隆完整仓库（推荐）**
 ```bash
 git clone https://github.com/FeeeeelixWong/meme-scanner.git
 cd meme-scanner
-```
 
-**方式二：只下载 Skill 文件（轻量）**
-```bash
-# curl
-curl -L -o meme_scanner.md https://raw.githubusercontent.com/FeeeeelixWong/meme-scanner/main/meme_scanner.md
-
-# 或 wget
-wget -O meme_scanner.md https://raw.githubusercontent.com/FeeeeelixWong/meme-scanner/main/meme_scanner.md
-```
-
----
-
-### 第五步：提取并校验 Bot
-
-可以让 Claude Code 按 Skill 自动部署，也可以先本地提取并做语法校验：
-
-```bash
 python3 scripts/extract_scan_live.py meme_scanner.md --output scan_live.py
-python3 -m py_compile scan_live.py
+MEME_SCANNER_MODE=replay python3 scan_live.py
+```
+
+Open [http://localhost:3241](http://localhost:3241). The built-in scenario shows four different policy outcomes:
+
+- `BLOCK`: LP data cannot be verified under strict policy, or a sell cascade is detected.
+- `WATCH`: the candidate passes basic checks but is too young or lacks enough confidence for an execution path.
+- `PASS`: the configured gates pass. Replay Mode still cannot quote, sign, or trade.
+
+Click any Event Ledger row to inspect the decision summary and the specific rule evidence behind it.
+
+## Runtime Modes
+
+| Mode | What it does | Credentials | Can sign or trade? |
+| --- | --- | --- | --- |
+| `replay` | Loads deterministic demo fixtures. This is the default. | None | No |
+| `observe` | Queries configured market data and creates local observations. | OKX read credentials | No |
+| `live` | Experimental transaction path after all entry gates pass. | API credentials and a dedicated wallet | Only with a second explicit gate |
+
+For observation mode, copy `.env.example` to `.env`, add only the API credentials required for market data, then run:
+
+```bash
+set -a && source .env && set +a
+MEME_SCANNER_MODE=observe python3 scan_live.py
+```
+
+`MEME_SCANNER_MODE=live` is intentionally harder to activate: it also requires `ENABLE_LIVE_TRADING=1` and a wallet key. Live execution is experimental, is not required for the project demo, and is outside the safe default path. Never use a primary wallet, disclose a private key, or expose the dashboard to the public internet.
+
+## What the scanner explains
+
+The dashboard separates discovery from permission to act:
+
+1. **Discovery filters** reject unsuitable market-cap, age, holder, developer-holding, and volume profiles.
+2. **Risk gates** fail closed on missing LP evidence and reject excessive bundle concentration, developer rug history, developer concentration, or suspicious wallet patterns.
+3. **Market-pressure checks** flag sell streaks, concentrated sell pressure, recent crashes, anti-chase conditions, and wash-like activity.
+4. **Execution-quality gates** can keep a visible signal in `WATCH` even when it is not eligible for an execution path.
+
+This is deliberately a risk-first workflow. A `PASS` means only that the configured checks did not block the candidate at that moment; it does not predict performance, safety, liquidity, or profitability.
+
+## Local Dashboard
+
+The dashboard binds to `127.0.0.1:3241` by default and provides:
+
+- Event Ledger with copyable contract addresses and click-through decision evidence.
+- Signal Queue distinguishing `WATCH` from eligible candidates.
+- Risk Blocks, positions, trade-history, and session summaries.
+- A read-only TraderSoul reflection rail. It does not override the deterministic safety gates.
+
+## Validate the project
+
+```bash
 python3 -m unittest discover -s tests -v
+python3 scripts/extract_scan_live.py meme_scanner.md --output /tmp/scan_live.py
+python3 -m py_compile /tmp/scan_live.py
 ```
 
-### 第六步：用 Claude Code 部署 Bot
+The checked-in source of truth is [`meme_scanner.md`](./meme_scanner.md). `scan_live.py` is generated locally and intentionally ignored so the skill file and extraction test remain the single reviewed implementation.
 
-1. 在项目目录下打开 Claude Code
-2. 对 Claude 说：
+## Safety Notes
 
-```
-请按照 skill 文件里的 AUTO-DEPLOY COMMAND，
-部署并启动 scan_live.py，skill 文件路径是 ./meme_scanner.md
-```
-
-3. Claude Code 会自动执行 STEP 1-5，完成部署
-
-### 第七步：确认运行正常
-
-Bot 启动后，打开浏览器访问：
-
-```
-http://localhost:3241
-```
-
-看到 Dashboard 界面说明运行正常 ✅
-
-**查看实时日志：**
-```bash
-tail -f bot.log
-```
-
-**停止 Bot：**
-```bash
-pkill -f scan_live.py
-```
-
----
-
-## 🧪 建议的测试流程
-
-> 不要上来就用真实仓位跑！
-
-### 第一天：观察模式（默认）
-
-保持 `ENABLE_LIVE_TRADING=0`，只观察信号质量。Bot 会完成扫描、安全检查和报价检查，但不会签名或广播交易。
-
-观察 24 小时，确认：
-- [ ] 信号触发频率是否正常（建议每小时 1-5 个）
-- [ ] Safety check 是否在正常拦截可疑代币
-- [ ] Dashboard 数据是否实时更新
-- [ ] `bot.log` 中没有 API、私钥、dashboard 绑定错误
-
-### 第二天：小仓位实盘
-
-确认信号质量后，再设置 `ENABLE_LIVE_TRADING=1`，使用默认配置（0.01 SOL/笔）运行 2-3 天，观察胜率和 PnL 曲线。
-
-### 第三天之后：按表现调整
-
-根据 Dashboard 里的 TraderSoul 分析和历史胜率，决定是否调整仓位大小。
-
----
-
-## ⚙️ 主要参数说明
-
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `SOL_PER_TRADE` | 0.01 SOL | 每笔交易仓位 |
-| `MAX_POSITIONS` | 5 | 最大同时持仓数 |
-| `MAX_SOL` | 0.25 SOL | 最大总敞口 |
-| `AGE_HARD_MIN` | 360s | 代币最小年龄（6分钟） |
-| `BUNDLE_ATH_PCT_MAX` | 22% | Bundle 最大占比 |
-| `TP1_PCT` | 15% | 第一止盈点 |
-| `TP2_PCT` | 45% | 第二止盈点 |
-| `TRAILING_DROP` | 8-20% | 动态 Trailing Stop 幅度 |
-| `MAX_HOLD_MIN` | 30min | 最大持仓时间 |
-| `MONITOR_SEC` | 3s | 持仓监控间隔 |
-| `ENABLE_LIVE_TRADING` | `0` | `1` 时才会签名并广播真实交易 |
-| `DASHBOARD_HOST` | `127.0.0.1` | Dashboard 监听地址；不建议公开到公网 |
-
----
-
-## ❓ 常见问题
-
-**Q: `WALLET_PRIVATE_KEY` 是什么格式？**
-
-Solana 钱包的 Base58 格式私钥，通常是一串 87-88 位的字母数字。
-在 Phantom 中：设置 → 账户 → 导出私钥。
-
----
-
-**Q: Bot 启动后 Dashboard 打不开？**
-
-```bash
-# 检查是否在运行
-ps aux | grep scan_live
-
-# 检查端口是否被占用
-lsof -i:3241
-
-# 查看错误日志
-tail -50 bot.log
-```
-
----
-
-**Q: 出现 `ModuleNotFoundError`？**
-
-```bash
-python3 -m pip install -r requirements.txt
-```
-
----
-
-**Q: 交易一直 PENDING 或失败？**
-
-- 检查钱包 SOL 余额是否充足（建议 > 0.1 SOL 用于 gas）
-- 检查 OKX API Key 是否有 Trade 权限
-- 查看 `bot.log` 里的具体错误信息
-
----
-
-**Q: 如何完全重置重新开始？**
-
-```bash
-pkill -f scan_live.py
-rm -f scan_positions.json scan_trades.json trader_soul.json bot.log
-```
-
----
-
-## 文件说明
-
-```
-meme_scanner.md         ← Skill 文件（包含完整 Bot 代码）
-scan_live.py            ← 由 Skill 自动提取生成，无需手动维护
-bot.log                 ← 运行日志
-scan_positions.json     ← 持仓记录（自动生成）
-scan_trades.json        ← 交易历史（自动生成）
-trader_soul.json        ← TraderSoul 进化数据（自动生成）
-```
-
----
+- This project is for research and demonstration. Meme-token markets can result in a total loss.
+- Do not treat scanner output as financial, legal, or investment advice.
+- No external data check can guarantee that a token is safe or that a transaction will succeed.
+- Keep credentials local and use a dedicated, low-value wallet only if independently choosing to explore the experimental live path.
 
 ## License
 
-MIT License — 可自由使用、修改、分发，但请保留原始声明。
-
----
-
-## 免责声明
-
-- 本项目仅供学习和研究目的
-- meme 币市场波动剧烈，存在极高风险
-- Bot 运行产生的任何盈亏由使用者自行承担
-- 作者不对代码 bug、API 异常、网络中断等导致的损失负责
-- 请遵守所在地区的法律法规
+[MIT](./LICENSE)
